@@ -1,0 +1,28 @@
+# Fichiers Python temporaires
+__pycache__/
+*.pyc
+
+# Environnements virtuels
+venv/
+env/
+.venv/
+
+# Données et fichiers générés (Excel, KML, CSV)
+*.xlsx
+*.xls
+*.kml
+*.csv
+*.log
+*.json
+*.kmz
+*_audit.csv
+
+
+# PyInstaller
+/build/
+/dist/
+*.spec
+
+# Dossiers d'éditeurs
+.vscode/
+.idea/
