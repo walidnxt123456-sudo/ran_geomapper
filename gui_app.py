@@ -299,30 +299,6 @@ class RANGeoMapperGUI(tk.Tk):
         tk.Button(save_bar, text="Recharger depuis config.json", padx=8, pady=4,
                   command=self._load_config_into_ui).pack(side="left", padx=8)
 
-        # Bloc dédié MSAN (taille du cercle + couleur)
-        msan_box = tk.LabelFrame(parent, text=" Couche MSAN (Cercle) ", padx=8, pady=6)
-        msan_box.pack(fill="x", pady=(0, 6))
-
-        self.msan_radius_var = tk.StringVar(value="50")
-        self.msan_color_var = tk.StringVar(value="ffff8000")
-
-        tk.Label(msan_box, text="Taille du cercle / Rayon (m) :").grid(row=0, column=0, sticky="w", padx=4, pady=2)
-        tk.Entry(msan_box, textvariable=self.msan_radius_var, width=10).grid(row=0, column=1, sticky="w", padx=4, pady=2)
-
-        tk.Label(msan_box, text="Couleur KML (aabbggrr) :").grid(row=0, column=2, sticky="w", padx=(12, 4), pady=2)
-        tk.Entry(msan_box, textvariable=self.msan_color_var, width=12).grid(row=0, column=3, sticky="w", padx=4, pady=2)
-
-        tk.Button(msan_box, text="🎨 Choisir couleur", command=self._pick_msan_color).grid(row=0, column=4, padx=6)
-
-    def _pick_msan_color(self):
-        from tkinter import colorchooser
-        chosen = colorchooser.askcolor(title="Choisir la couleur MSAN", parent=self)
-        if not chosen or not chosen[1]:
-            return
-        hex_rgb = chosen[1].lstrip("#")  # rrggbb
-        r, g, b = hex_rgb[0:2], hex_rgb[2:4], hex_rgb[4:6]
-        # KML utilise aabbggrr ; l'alpha final est géré par global_opacity_percent
-        self.msan_color_var.set(f"ff{b}{g}{r}".lower())
 
     def _load_config_into_ui(self):
         settings = self.mapper.config.get("settings", {})
@@ -333,8 +309,6 @@ class RANGeoMapperGUI(tk.Tk):
         self.cfg_offset.set(str(settings.get("default_offset_m", 8)))
 
         msan_rule = self.mapper.config.get("band_rules", {}).get("MSAN", {})
-        self.msan_radius_var.set(str(msan_rule.get("radius_m", 50)))
-        self.msan_color_var.set(str(msan_rule.get("color_kml", "ffff8000")))
 
         for item in self.rules_tree.get_children():
             self.rules_tree.delete(item)
@@ -429,12 +403,6 @@ class RANGeoMapperGUI(tk.Tk):
             messagebox.showerror("Paramètres invalides", "Vérifiez que les paramètres généraux sont numériques.")
             return
 
-        try:
-            msan_radius = float(self.msan_radius_var.get())
-        except ValueError:
-            messagebox.showerror("Paramètre MSAN invalide", "La taille du cercle MSAN doit être numérique.")
-            return
-
         new_rules = {}
         for item in self.rules_tree.get_children():
             key, rad, bw, off, col = self.rules_tree.item(item, "values")
@@ -444,14 +412,6 @@ class RANGeoMapperGUI(tk.Tk):
                 "offset_m": float(off),
                 "color_kml": str(col).strip(),
             }
-
-        msan_color = self.msan_color_var.get().strip()
-        new_rules["MSAN"] = {
-            "radius_m": msan_radius,
-            "beamwidth": 360.0,
-            "offset_m": float(new_rules.get("MSAN", {}).get("offset_m", 5.0)),
-            "color_kml": msan_color,
-        }
 
         new_mapping = {}
         for item in self.map_tree.get_children():
@@ -469,8 +429,6 @@ class RANGeoMapperGUI(tk.Tk):
         self.mapper.config["band_mapping"] = new_mapping
         self.mapper.save_config()
 
-        # Rafraîchir l'arbre des règles pour refléter MSAN et appliquer immédiatement à l'auditeur
-        self._load_config_into_ui()
         self.mapper.auditor = RANDataAuditor(self.mapper.config.get("band_mapping", {}))
         self.log("Configuration enregistrée et appliquée en temps réel.")
         messagebox.showinfo("Configuration enregistrée", "La configuration a été enregistrée et appliquée en temps réel.")
