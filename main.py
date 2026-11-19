@@ -38,89 +38,125 @@ DEFAULT_CONFIG = {
         "output_format": "kmz",
         "global_opacity_percent": 45,
         "default_offset_m": 8,
-        "default_radius_m": 250,
+        "default_radius_m": 360,
         "default_beamwidth": 60
     },
     "band_rules": {
-        "2G_900": {
-            "radius_m": 500,
-            "beamwidth": 65,
+        "MSAN": {
+            "radius_m": 50,
+            "beamwidth": 360,
             "offset_m": 5,
-            "color_kml": "7f0000ff"
+            "color_kml": "ffff8000"
+        },
+        "2G_900": {
+            "radius_m": 50,
+            "beamwidth": 360,
+            "offset_m": 5,
+            "color_kml": "66ff8000"
         },
         "2G_1800": {
             "radius_m": 350,
             "beamwidth": 60,
             "offset_m": 7,
-            "color_kml": "7f00a5ff"
+            "color_kml": "ffff8000"
         },
         "3G_900": {
             "radius_m": 450,
             "beamwidth": 65,
             "offset_m": 6,
-            "color_kml": "7f00ff55"
+            "color_kml": "66ff0000"
         },
         "3G_2100": {
             "radius_m": 350,
             "beamwidth": 60,
             "offset_m": 8,
-            "color_kml": "7f00ff00"
+            "color_kml": "ffff0000"
         },
         "4G_800": {
             "radius_m": 450,
             "beamwidth": 65,
             "offset_m": 7,
-            "color_kml": "7f00ffff"
+            "color_kml": "66ff0000"
         },
         "4G_1800": {
             "radius_m": 300,
             "beamwidth": 60,
             "offset_m": 10,
-            "color_kml": "7fffaa00"
+            "color_kml": "660000ff"
         },
         "4G_2100": {
             "radius_m": 300,
             "beamwidth": 60,
             "offset_m": 10,
-            "color_kml": "7fff8000"
+            "color_kml": "660000ff"
         },
         "4G_2600": {
             "radius_m": 200,
             "beamwidth": 55,
             "offset_m": 12,
-            "color_kml": "7f00d7ff"
+            "color_kml": "660000ff"
         },
         "5G_1800": {
-            "radius_m": 250,
-            "beamwidth": 50,
+            "radius_m": 300,
+            "beamwidth": 60,
             "offset_m": 10,
-            "color_kml": "7ff000ff"
+            "color_kml": "66ff0000"
         },
         "5G_3500": {
-            "radius_m": 120,
-            "beamwidth": 45,
+            "radius_m": 500,
+            "beamwidth": 60,
             "offset_m": 15,
-            "color_kml": "7f800080"
+            "color_kml": "66ff0000"
         }
     },
     "band_mapping": {
+        "MSAN": {
+            "0": [
+                [0, 124],
+                [975, 1023]
+            ],
+            "1": [
+                [512, 885]
+            ]
+        },
         "2G": {
-            "900": [[1, 124], [975, 1023]],
-            "1800": [[512, 885]]
+            "900": [
+                [1, 124],
+                [975, 1023]
+            ],
+            "1800": [
+                [512, 885]
+            ]
         },
         "3G": {
-            "900": [[2937, 3088]],
-            "2100": [[10562, 10838]]
+            "900": [
+                [2937, 3088]
+            ],
+            "2100": [
+                [10562, 10838]
+            ]
         },
         "4G": {
-            "800": [[6150, 6449]],
-            "1800": [[1200, 1949]],
-            "2100": [[0, 599]],
-            "2600": [[2750, 3449]]
+            "800": [
+                [6150, 6449]
+            ],
+            "1800": [
+                [1200, 1949]
+            ],
+            "2100": [
+                [0, 599]
+            ],
+            "2600": [
+                [2750, 3449]
+            ]
         },
         "5G": {
-            "1800": [[361000, 376000]],
-            "3500": [[620000, 653333]]
+            "1800": [
+                [361000, 376000]
+            ],
+            "3500": [
+                [620000, 653333]
+            ]
         }
     },
     "column_mappings": {},
@@ -169,6 +205,10 @@ class RANGeoMapper:
                 if key in config:
                     logging.warning(f"Clé de configuration '{key}' invalide, valeurs par défaut utilisées.")
                 config[key] = copy.deepcopy(default)
+                
+        if "MSAN" not in config["band_rules"] or not isinstance(config["band_rules"]["MSAN"], dict):
+            config["band_rules"]["MSAN"] = copy.deepcopy(DEFAULT_CONFIG["band_rules"]["MSAN"])
+
         return config
 
     def _write_config(self, config):
@@ -267,7 +307,7 @@ class RANGeoMapper:
             return None
 
         tech = self.auditor.resolve_file_tech(df, file_name, mapping)
-        if tech not in ("2G", "3G", "4G", "5G"):
+        if tech not in ("2G", "3G", "4G", "5G", "MSAN"):
             logging.error(f"Technologie non déterminée pour '{file_name}' : fichier ignoré.")
             return None
 

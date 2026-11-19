@@ -1,17 +1,34 @@
+import math
 import logging
 from collections import Counter
 import pandas as pd
 
 VALID_TECHS = ["2G", "3G", "4G", "5G"]
+NON_RADIO_TECHS = ["MSAN"]
+ALL_TECHS = VALID_TECHS + NON_RADIO_TECHS
 
 def _to_float(value):
     """Parses a number from text; accepts comma decimals ('36,84'). Raises ValueError if invalid."""
-    if value is None:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
         raise ValueError("valeur manquante")
     text = str(value).strip().replace(",", ".")
-    if not text or text.lower() == "nan":
+    if not text or text.lower() in {"nan", "none", "null"}:
         raise ValueError("valeur vide")
-    return float(text)
+    num = float(text)
+    if not math.isfinite(num):
+        raise ValueError("valeur non finie")
+    return num
+
+
+def _clean_text(value, fallback=""):
+    """Converts a cell value to clean text, treating None, NaN, and 'nan'/'none' as empty."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return fallback
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return fallback
+    return text
+
 
 class RANDataAuditor:
     """
@@ -34,8 +51,8 @@ class RANDataAuditor:
         record = {
             "Row_Index": row_idx,
             "File": file_name,
-            "Site_ID": str(site_id),
-            "Cell_ID": str(cell_id),
+            "Site_ID": _clean_text(site_id, "SITE_INCONNU"),
+            "Cell_ID": _clean_text(cell_id, "CELL_INCONNUE"),
             "Status": status,
             "Issue_Reason": reason,
             "Details": details
@@ -43,54 +60,58 @@ class RANDataAuditor:
         self.audit_records.append(record)
         if status == "DROPPED":
             self.total_dropped += 1
-            logging.warning(f"Ligne {row_idx:4d} | Fichier: {file_name} | Site: {site_id} | Cellule: {cell_id} -> REJETÉE: {reason}")
+            logging.warning(f"Ligne {row_idx:4d} | Fichier: {file_name} | Site: {record['Site_ID']} | Cellule: {record['Cell_ID']} -> REJETÉE: {reason}")
         else:
             self.total_warnings += 1
-            logging.info(f"Ligne {row_idx:4d} | Fichier: {file_name} | Site: {site_id} | Cellule: {cell_id} -> AVERTISSEMENT: {reason}")
+            logging.info(f"Ligne {row_idx:4d} | Fichier: {file_name} | Site: {record['Site_ID']} | Cellule: {record['Cell_ID']} -> AVERTISSEMENT: {reason}")
 
     @staticmethod
     def _tech_from_text(text):
         """Returns '2G'..'5G' if the text contains one, else None."""
-        text = str(text).strip().upper()
-        if text in VALID_TECHS:
-            return text
-        for t in ["5G", "4G", "3G", "2G"]:
-            if t in text:
+        cleaned = _clean_text(text).upper()
+        if not cleaned:
+            return None
+        if cleaned in ALL_TECHS:
+            return cleaned
+        for t in ["5G", "4G", "3G", "2G", "MSAN"]:
+            if t in cleaned:
                 return t
         return None
 
     def _translate_band(self, tech, raw_band):
         """
         Translates raw frequency/channel numbers to standardized band names using config ranges.
-        Example: EARFCN 1300 -> '1800'. If already a string like 'B3', returns 'B3'.
-        Returns (band, matched): matched is False when the value is missing or
-        numeric but falls in no configured range.
+        Example: EARFCN 1300 -> '1800'. If already a non-numeric label like 'B3', returns 'B3'.
+        Returns (band, matched): matched is True when a configured range matches (or a non-empty
+        non-numeric band label is provided), and False when missing or outside configured ranges.
         """
-        if raw_band is None or (isinstance(raw_band, float) and pd.isna(raw_band)):
-            return "UNKNOWN", False
-        
-        raw_str = str(raw_band).strip()
-        if not raw_str or raw_str.lower() == "nan":
+        raw_str = _clean_text(raw_band)
+        if not raw_str:
             return "UNKNOWN", False
 
-        # Try to parse as a number to check against configured ranges
+        # Try to parse as a finite number to check against configured ranges
         try:
-            val = float(raw_str)
+            val = _to_float(raw_str)
         except ValueError:
-            # If it's not a number (e.g., "B3", "n78"), return it as-is (cleaned)
+            # Non-numeric band label (e.g., "B3", "n78")
             return raw_str.upper(), True
 
         # Check against configured ranges for this specific technology
         tech_mapping = self.band_mapping.get(tech, {})
         for target_band, ranges in tech_mapping.items():
             for r in ranges:
-                if isinstance(r, list) and len(r) == 2:
-                    if r[0] <= val <= r[1]:
-                        return target_band, True
-        
-        # Fallback: if no range matched, return the numeric value as a string
-        # (e.g., EARFCN 9999 will just become "9999", which will fall back to default rules)
-        return (str(int(val)) if val.is_integer() else str(val)), False
+                if isinstance(r, (list, tuple)) and len(r) == 2:
+                    try:
+                        low = _to_float(r[0])
+                        high = _to_float(r[1])
+                    except ValueError:
+                        continue
+                    if low <= val <= high:
+                        return str(target_band), True
+
+        # Fallback: numeric channel fell outside all configured ranges
+        fallback_band = str(int(val)) if val.is_integer() else str(val)
+        return fallback_band, False
 
     def detect_file_tech(self, df, file_name, mapping):
         """
@@ -106,18 +127,19 @@ class RANDataAuditor:
                 tech = counts.most_common(1)[0][0]
                 logging.info(f"Technologie de '{file_name}' déduite de la colonne '{tech_col}' : {tech}")
                 return tech
-        
+
         fname_upper = file_name.upper()
         for tech, hints in [
             ("5G", ("5G", "NR")),
             ("4G", ("4G", "LTE")),
             ("3G", ("3G", "UMTS", "UTRAN")),
             ("2G", ("2G", "GSM")),
+            ("MSAN", ("MSAN",)),
         ]:
             if any(h in fname_upper for h in hints):
                 logging.info(f"Technologie de '{file_name}' déduite du nom de fichier : {tech}")
                 return tech
-                
+
         return None
 
     def resolve_file_tech(self, df, file_name, mapping):
@@ -141,17 +163,25 @@ class RANDataAuditor:
         Validates individual data rows: coordinates, azimuth, site/cell IDs, RAT, and Band translation.
         """
         self.total_processed += 1
-        site_id = row.get(mapping.get("site_id", ""), "SITE_INCONNU")
-        cell_id = row.get(mapping.get("cell_id", ""), "CELL_INCONNUE")
+        site_id = _clean_text(row.get(mapping.get("site_id", "")), "SITE_INCONNU")
+        cell_id = _clean_text(row.get(mapping.get("cell_id", "")), "CELL_INCONNUE")
+        site_name = _clean_text(row.get(mapping.get("site_name", "")), site_id)
+        cell_name = _clean_text(row.get(mapping.get("cell_name", "")), cell_id)
         raw_lat = row.get(mapping.get("latitude", ""))
         raw_lon = row.get(mapping.get("longitude", ""))
+
+        # 3. Technology determination
+        tech = None
+        tech_col = mapping.get("tech", "")
+        if tech_col and tech_col in row:
+            tech = self._tech_from_text(row.get(tech_col, ""))
+        tech = tech or default_tech or "DEFAULT"
+        is_non_radio = tech in NON_RADIO_TECHS
 
         # 1. Geocoordinates validation
         try:
             lat = _to_float(raw_lat)
             lon = _to_float(raw_lon)
-            if pd.isna(lat) or pd.isna(lon):
-                raise ValueError("Coordonnées NaN")
             if lat == 0.0 and lon == 0.0:
                 self.log_issue(row_idx, file_name, site_id, cell_id, "DROPPED", "Coordonnées Nulles (0.0, 0.0)")
                 return None
@@ -166,37 +196,39 @@ class RANDataAuditor:
         raw_az = row.get(mapping.get("azimuth", ""))
         try:
             azimuth = _to_float(raw_az)
-            if pd.isna(azimuth) or not (0 <= azimuth <= 360):
-                self.log_issue(row_idx, file_name, site_id, cell_id, "WARNING", f"Azimut Invalide ({raw_az}). Réinitialisé à 0°")
+            if not (0 <= azimuth <= 360):
+                if not is_non_radio:
+                    self.log_issue(row_idx, file_name, site_id, cell_id, "WARNING", f"Azimut Invalide ({raw_az}). Réinitialisé à 0°")
                 azimuth = 0.0
         except Exception:
-            self.log_issue(row_idx, file_name, site_id, cell_id, "WARNING", f"Azimut non numérique ({raw_az}). Réinitialisé à 0°")
+            if not is_non_radio and _clean_text(raw_az):
+                self.log_issue(row_idx, file_name, site_id, cell_id, "WARNING", f"Azimut non numérique ({raw_az}). Réinitialisé à 0°")
             azimuth = 0.0
 
-        # 3. Technology determination
-        tech = None
-        tech_col = mapping.get("tech", "")
-        if tech_col and tech_col in row:
-            tech = self._tech_from_text(row.get(tech_col, ""))
-        tech = tech or default_tech or "DEFAULT"
-
-        # 4. Band Translation (The new generic logic!)
-        raw_band = row.get(mapping.get("band", ""), "")
-        band, matched = self._translate_band(tech, raw_band)
+        # 4. Band Translation
+        band_col = mapping.get("band", "")
+        raw_band = row.get(band_col, "") if band_col else ""
+        if is_non_radio and not _clean_text(raw_band):
+            band, matched = tech, True
+        else:
+            band, matched = self._translate_band(tech, raw_band)
+        
         self.band_counts[(tech, band)] += 1
+
         if not matched:
-            self.unmatched_channels[(tech, str(raw_band).strip() or "(vide)")] += 1
+            raw_label = _clean_text(raw_band) or "(vide)"
+            self.unmatched_channels[(tech, raw_label)] += 1
 
         self.total_valid += 1
-        attributes = {str(k): ("" if pd.isna(v) else str(v)) for k, v in row.items()}
-        
+        attributes = {str(k): _clean_text(v, "") for k, v in row.items()}
+
         return {
-            "site_id": str(site_id),
-            "site_name": str(row.get(mapping.get("site_name", ""), site_id)),
-            "cell_id": str(cell_id),
-            "cell_name": str(row.get(mapping.get("cell_name", ""), cell_id)),
+            "site_id": site_id,
+            "site_name": site_name,
+            "cell_id": cell_id,
+            "cell_name": cell_name,
             "tech": tech,
-            "band": band,  # <-- Now uses the translated band!
+            "band": band,
             "latitude": lat,
             "longitude": lon,
             "azimuth": azimuth,
@@ -224,7 +256,13 @@ class RANDataAuditor:
         lines = ["=" * 80, " RÉCAPITULATIF PAR TECHNOLOGIE / BANDE", "=" * 80,
                  f" {'Techno':<8}{'Bande':<12}{'Cellules':>10}   Règle band_rules", "-" * 80]
         for (tech, band), n in sorted(self.band_counts.items()):
-            flag = "OK" if f"{tech}_{band}" in band_rules else "PAR DÉFAUT (aucune règle)"
+            rule_key = f"{tech}_{band}"
+            if rule_key in band_rules:
+                flag = "OK"
+            elif tech in band_rules:
+                flag = f"TECH ({tech})"
+            else:
+                flag = "PAR DÉFAUT (aucune règle)"
             lines.append(f" {tech:<8}{band:<12}{n:>10}   {flag}")
         lines.append("-" * 80)
 

@@ -4,10 +4,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from main import RANGeoMapper
+from data_validator import RANDataAuditor
 from kml_generator import KMLGenerator
 from file_reader import read_data_file
 
-TECHS = ["2G", "3G", "4G", "5G"]
+TECHS = ["2G", "3G", "4G", "5G", "MSAN"]
+ALL_RULE_TECHS = ["2G", "3G", "4G", "5G", "MSAN"]
 IGNORE_LABEL = "(Ignorer / Non spécifié)"
 
 
@@ -54,7 +56,6 @@ class ColumnMappingDialog(tk.Toplevel):
         frame = tk.Frame(self, padx=15, pady=5)
         frame.pack(fill="x", expand=True)
 
-        # Technology of the whole file (required)
         tk.Label(frame, text="Technologie du fichier * :", anchor="w", font=("Segoe UI", 9, "bold")).grid(
             row=0, column=0, sticky="w", padx=5, pady=5)
         ttk.Combobox(frame, textvariable=self.tech_var, values=TECHS, state="readonly", width=12).grid(
@@ -102,17 +103,18 @@ class RANGeoMapperGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("RAN-GeoMapper Studio")
-        self.geometry("780x720")
-        self.resizable(False, False)
+        self.geometry("820x780")
+        self.minsize(780, 720)
 
         self.selected_files = []
         self.mapper = RANGeoMapper()
         self._build_ui()
+        self._load_config_into_ui()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
         tk.Label(self, text="RAN-GeoMapper Studio", font=("Segoe UI", 16, "bold")).pack(pady=(10, 0))
-        tk.Label(self, text="Découverte des fichiers RAN, puis génération KMZ/KML", font=("Segoe UI", 9)).pack(pady=(0, 8))
+        tk.Label(self, text="Découverte des fichiers RAN, génération KMZ/KML et configuration", font=("Segoe UI", 9)).pack(pady=(0, 8))
 
         frame_files = tk.LabelFrame(self, text=" Fichiers source ", padx=10, pady=8)
         frame_files.pack(fill="x", padx=20, pady=5)
@@ -147,14 +149,332 @@ class RANGeoMapperGUI(tk.Tk):
         row = tk.Frame(tab_gen)
         row.pack(anchor="w", pady=6)
         tk.Label(row, text="Format de sortie :").pack(side="left")
-        self.fmt_var = tk.StringVar(value=str(self.mapper.config.get("settings", {}).get("output_format", "kmz")).lower())
+        self.fmt_var = tk.StringVar(value="kmz")
         ttk.Combobox(row, textvariable=self.fmt_var, values=["kmz", "kml"], state="readonly", width=8).pack(side="left", padx=6)
         self.btn_generate = tk.Button(tab_gen, text="🚀 Générer la cartographie", bg="#0066cc", fg="white",
                                       font=("Segoe UI", 10, "bold"), padx=10, pady=4, command=self.run_generation)
         self.btn_generate.pack(anchor="w", pady=4)
 
-        self.txt_log = tk.Text(self, height=16, width=98, font=("Consolas", 8), state="disabled")
-        self.txt_log.pack(padx=20, pady=5)
+        # Tab 3: user-friendly configuration editor
+        tab_cfg = tk.Frame(self, padx=10, pady=8)
+        self.notebook.add(tab_cfg, text="  3 · Configuration  ")
+        self._build_config_tab(tab_cfg)
+
+        self.txt_log = tk.Text(self, height=13, width=98, font=("Consolas", 8), state="disabled")
+        self.txt_log.pack(fill="both", expand=True, padx=20, pady=(4, 10))
+
+    def _pick_rule_color(self):
+        from tkinter import colorchooser
+        chosen = colorchooser.askcolor(title="Choisir la couleur de la règle", parent=self)
+        if not chosen or not chosen[1]:
+            return
+        hex_rgb = chosen[1].lstrip("#")  # rrggbb
+        r, g, b = hex_rgb[0:2], hex_rgb[2:4], hex_rgb[4:6]
+
+        current = self.rule_col_var.get().strip()
+        alpha = current[:2] if len(current) == 8 else "ff"
+        self.rule_col_var.set(f"{alpha}{b}{g}{r}".lower())
+        
+    def _build_config_tab(self, parent):
+        settings_box = tk.LabelFrame(parent, text=" Paramètres généraux ", padx=8, pady=6)
+        settings_box.pack(fill="x", pady=(0, 6))
+
+        self.cfg_opacity = tk.StringVar()
+        self.cfg_radius = tk.StringVar()
+        self.cfg_beamwidth = tk.StringVar()
+        self.cfg_offset = tk.StringVar()
+
+        tk.Label(settings_box, text="Opacité (%):").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        tk.Entry(settings_box, textvariable=self.cfg_opacity, width=8).grid(row=0, column=1, sticky="w", padx=4, pady=2)
+
+        tk.Label(settings_box, text="Rayon défaut (m):").grid(row=0, column=2, sticky="w", padx=8, pady=2)
+        tk.Entry(settings_box, textvariable=self.cfg_radius, width=8).grid(row=0, column=3, sticky="w", padx=4, pady=2)
+
+        tk.Label(settings_box, text="Ouverture défaut (°):").grid(row=0, column=4, sticky="w", padx=8, pady=2)
+        tk.Entry(settings_box, textvariable=self.cfg_beamwidth, width=8).grid(row=0, column=5, sticky="w", padx=4, pady=2)
+
+        tk.Label(settings_box, text="Décalage défaut (m):").grid(row=0, column=6, sticky="w", padx=8, pady=2)
+        tk.Entry(settings_box, textvariable=self.cfg_offset, width=8).grid(row=0, column=7, sticky="w", padx=4, pady=2)
+
+        sub_nb = ttk.Notebook(parent)
+        sub_nb.pack(fill="both", expand=True, pady=4)
+
+        # Sub-tab A: band_rules
+        rules_tab = tk.Frame(sub_nb, padx=6, pady=6)
+        sub_nb.add(rules_tab, text=" Règles par bande (band_rules) ")
+
+        self.rules_tree = ttk.Treeview(
+            rules_tab,
+            columns=("rule", "radius", "beamwidth", "offset", "color"),
+            show="headings",
+            height=5,
+        )
+        for col, title, w in [
+            ("rule", "Règle (ex: 4G_1800, MSAN)", 180),
+            ("radius", "Rayon (m)", 85),
+            ("beamwidth", "Angle (°)", 85),
+            ("offset", "Décalage (m)", 90),
+            ("color", "Couleur KML (aabbggrr)", 140),
+        ]:
+            self.rules_tree.heading(col, text=title)
+            self.rules_tree.column(col, width=w, anchor="center")
+        self.rules_tree.pack(fill="x", pady=(0, 6))
+        self.rules_tree.bind("<<TreeviewSelect>>", self._on_rule_select)
+
+        rule_form = tk.Frame(rules_tab)
+        rule_form.pack(fill="x")
+        self.rule_key_var = tk.StringVar()
+        self.rule_rad_var = tk.StringVar()
+        self.rule_bw_var = tk.StringVar()
+        self.rule_off_var = tk.StringVar()
+        self.rule_col_var = tk.StringVar()
+
+        tk.Label(rule_form, text="Règle:").grid(row=0, column=0, padx=2)
+        tk.Entry(rule_form, textvariable=self.rule_key_var, width=14).grid(row=0, column=1, padx=2)
+        tk.Label(rule_form, text="Rayon:").grid(row=0, column=2, padx=2)
+        tk.Entry(rule_form, textvariable=self.rule_rad_var, width=7).grid(row=0, column=3, padx=2)
+        tk.Label(rule_form, text="Angle:").grid(row=0, column=4, padx=2)
+        tk.Entry(rule_form, textvariable=self.rule_bw_var, width=7).grid(row=0, column=5, padx=2)
+        tk.Label(rule_form, text="Décalage:").grid(row=0, column=6, padx=2)
+        tk.Entry(rule_form, textvariable=self.rule_off_var, width=7).grid(row=0, column=7, padx=2)
+        tk.Label(rule_form, text="Couleur:").grid(row=0, column=8, padx=2)
+        tk.Entry(rule_form, textvariable=self.rule_col_var, width=10).grid(row=0, column=9, padx=2)
+
+        tk.Label(rule_form, text="Couleur:").grid(row=0, column=8, padx=2)
+        tk.Entry(rule_form, textvariable=self.rule_col_var, width=10).grid(row=0, column=9, padx=2)
+        tk.Button(rule_form, text="🎨 Couleur", command=self._pick_rule_color).grid(row=0, column=10, padx=4)
+
+        rule_btns = tk.Frame(rules_tab)
+        rule_btns.pack(fill="x", pady=(5, 0))
+        tk.Button(rule_btns, text="Ajouter / Mettre à jour", command=self._upsert_rule).pack(side="left", padx=3)
+        tk.Button(rule_btns, text="Supprimer", command=self._delete_rule).pack(side="left", padx=3)
+        tk.Button(rule_btns, text="Modèle MSAN", command=self._fill_msan_template).pack(side="left", padx=3)
+
+        # Sub-tab B: band_mapping ranges
+        map_tab = tk.Frame(sub_nb, padx=6, pady=6)
+        sub_nb.add(map_tab, text=" Plages canaux (band_mapping) ")
+
+        self.map_tree = ttk.Treeview(
+            map_tab,
+            columns=("tech", "band", "min_ch", "max_ch"),
+            show="headings",
+            height=5,
+        )
+        for col, title, w in [
+            ("tech", "Technologie", 110),
+            ("band", "Bande cible", 110),
+            ("min_ch", "Canal min", 110),
+            ("max_ch", "Canal max", 110),
+        ]:
+            self.map_tree.heading(col, text=title)
+            self.map_tree.column(col, width=w, anchor="center")
+        self.map_tree.pack(fill="x", pady=(0, 6))
+
+        map_form = tk.Frame(map_tab)
+        map_form.pack(fill="x")
+        self.map_tech_var = tk.StringVar(value="4G")
+        self.map_band_var = tk.StringVar()
+        self.map_min_var = tk.StringVar()
+        self.map_max_var = tk.StringVar()
+
+        tk.Label(map_form, text="Tech:").grid(row=0, column=0, padx=2)
+        ttk.Combobox(map_form, textvariable=self.map_tech_var, values=ALL_RULE_TECHS, state="readonly", width=8).grid(row=0, column=1, padx=2)
+        tk.Label(map_form, text="Bande:").grid(row=0, column=2, padx=2)
+        tk.Entry(map_form, textvariable=self.map_band_var, width=10).grid(row=0, column=3, padx=2)
+        tk.Label(map_form, text="Min:").grid(row=0, column=4, padx=2)
+        tk.Entry(map_form, textvariable=self.map_min_var, width=10).grid(row=0, column=5, padx=2)
+        tk.Label(map_form, text="Max:").grid(row=0, column=6, padx=2)
+        tk.Entry(map_form, textvariable=self.map_max_var, width=10).grid(row=0, column=7, padx=2)
+
+        map_btns = tk.Frame(map_tab)
+        map_btns.pack(fill="x", pady=(5, 0))
+        tk.Button(map_btns, text="Ajouter plage", command=self._add_range).pack(side="left", padx=3)
+        tk.Button(map_btns, text="Supprimer plage", command=self._delete_range).pack(side="left", padx=3)
+
+        # Save / Reload bar
+        save_bar = tk.Frame(parent)
+        save_bar.pack(fill="x", pady=(6, 0))
+        tk.Button(save_bar, text="💾 Appliquer et enregistrer en temps réel", bg="#28a745", fg="white",
+                  font=("Segoe UI", 9, "bold"), padx=10, pady=4, command=self.save_config_realtime).pack(side="left")
+        tk.Button(save_bar, text="Recharger depuis config.json", padx=8, pady=4,
+                  command=self._load_config_into_ui).pack(side="left", padx=8)
+
+        # Bloc dédié MSAN (taille du cercle + couleur)
+        msan_box = tk.LabelFrame(parent, text=" Couche MSAN (Cercle) ", padx=8, pady=6)
+        msan_box.pack(fill="x", pady=(0, 6))
+
+        self.msan_radius_var = tk.StringVar(value="50")
+        self.msan_color_var = tk.StringVar(value="ffff8000")
+
+        tk.Label(msan_box, text="Taille du cercle / Rayon (m) :").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        tk.Entry(msan_box, textvariable=self.msan_radius_var, width=10).grid(row=0, column=1, sticky="w", padx=4, pady=2)
+
+        tk.Label(msan_box, text="Couleur KML (aabbggrr) :").grid(row=0, column=2, sticky="w", padx=(12, 4), pady=2)
+        tk.Entry(msan_box, textvariable=self.msan_color_var, width=12).grid(row=0, column=3, sticky="w", padx=4, pady=2)
+
+        tk.Button(msan_box, text="🎨 Choisir couleur", command=self._pick_msan_color).grid(row=0, column=4, padx=6)
+
+    def _pick_msan_color(self):
+        from tkinter import colorchooser
+        chosen = colorchooser.askcolor(title="Choisir la couleur MSAN", parent=self)
+        if not chosen or not chosen[1]:
+            return
+        hex_rgb = chosen[1].lstrip("#")  # rrggbb
+        r, g, b = hex_rgb[0:2], hex_rgb[2:4], hex_rgb[4:6]
+        # KML utilise aabbggrr ; l'alpha final est géré par global_opacity_percent
+        self.msan_color_var.set(f"ff{b}{g}{r}".lower())
+
+    def _load_config_into_ui(self):
+        settings = self.mapper.config.get("settings", {})
+        self.fmt_var.set(str(settings.get("output_format", "kmz")).lower())
+        self.cfg_opacity.set(str(settings.get("global_opacity_percent", 45)))
+        self.cfg_radius.set(str(settings.get("default_radius_m", 360)))
+        self.cfg_beamwidth.set(str(settings.get("default_beamwidth", 60)))
+        self.cfg_offset.set(str(settings.get("default_offset_m", 8)))
+
+        msan_rule = self.mapper.config.get("band_rules", {}).get("MSAN", {})
+        self.msan_radius_var.set(str(msan_rule.get("radius_m", 50)))
+        self.msan_color_var.set(str(msan_rule.get("color_kml", "ffff8000")))
+
+        for item in self.rules_tree.get_children():
+            self.rules_tree.delete(item)
+        for key, rule in sorted(self.mapper.config.get("band_rules", {}).items()):
+            self.rules_tree.insert("", "end", values=(
+                key,
+                rule.get("radius_m", ""),
+                rule.get("beamwidth", ""),
+                rule.get("offset_m", ""),
+                rule.get("color_kml", ""),
+            ))
+
+        for item in self.map_tree.get_children():
+            self.map_tree.delete(item)
+        for tech, bands in sorted(self.mapper.config.get("band_mapping", {}).items()):
+            for band, ranges in sorted(bands.items()):
+                for r in ranges:
+                    if isinstance(r, (list, tuple)) and len(r) == 2:
+                        self.map_tree.insert("", "end", values=(tech, band, r[0], r[1]))
+
+    def _on_rule_select(self, _event):
+        sel = self.rules_tree.selection()
+        if not sel:
+            return
+        vals = self.rules_tree.item(sel[0], "values")
+        self.rule_key_var.set(vals[0])
+        self.rule_rad_var.set(vals[1])
+        self.rule_bw_var.set(vals[2])
+        self.rule_off_var.set(vals[3])
+        self.rule_col_var.set(vals[4])
+
+    def _upsert_rule(self):
+        key = self.rule_key_var.get().strip()
+        if not key:
+            messagebox.showwarning("Champ requis", "Indiquez un nom de règle (ex: 4G_1800 ou MSAN).", parent=self)
+            return
+        try:
+            rad = float(self.rule_rad_var.get())
+            bw = float(self.rule_bw_var.get())
+            off = float(self.rule_off_var.get())
+        except ValueError:
+            messagebox.showwarning("Valeur invalide", "Rayon, angle et décalage doivent être numériques.", parent=self)
+            return
+        col = self.rule_col_var.get().strip()
+        vals = (key, rad, bw, off, col)
+        for item in self.rules_tree.get_children():
+            if self.rules_tree.item(item, "values")[0] == key:
+                self.rules_tree.item(item, values=vals)
+                return
+        self.rules_tree.insert("", "end", values=vals)
+
+    def _delete_rule(self):
+            for item in self.rules_tree.selection():
+                self.rules_tree.delete(item)
+
+    def _fill_msan_template(self):
+        self.rule_key_var.set("MSAN")
+        self.rule_rad_var.set("50")
+        self.rule_bw_var.set("360")
+        self.rule_off_var.set("5")
+        self.rule_col_var.set("ffff8000")
+
+    def _add_range(self):
+        tech = self.map_tech_var.get().strip()
+        band = self.map_band_var.get().strip()
+        if not tech or not band:
+            messagebox.showwarning("Champ requis", "Indiquez la technologie et la bande cible.", parent=self)
+            return
+        try:
+            low = float(self.map_min_var.get())
+            high = float(self.map_max_var.get())
+        except ValueError:
+            messagebox.showwarning("Valeur invalide", "Les bornes min et max doivent être numériques.", parent=self)
+            return
+        if low > high:
+            messagebox.showwarning("Plage invalide", "Le canal min doit être inférieur ou égal au canal max.", parent=self)
+            return
+        self.map_tree.insert("", "end", values=(tech, band, int(low) if low.is_integer() else low, int(high) if high.is_integer() else high))
+
+    def _delete_range(self):
+        for item in self.map_tree.selection():
+            self.map_tree.delete(item)
+
+
+    def save_config_realtime(self):
+        try:
+            opacity = float(self.cfg_opacity.get())
+            radius = float(self.cfg_radius.get())
+            beamwidth = float(self.cfg_beamwidth.get())
+            offset = float(self.cfg_offset.get())
+        except ValueError:
+            messagebox.showerror("Paramètres invalides", "Vérifiez que les paramètres généraux sont numériques.")
+            return
+
+        try:
+            msan_radius = float(self.msan_radius_var.get())
+        except ValueError:
+            messagebox.showerror("Paramètre MSAN invalide", "La taille du cercle MSAN doit être numérique.")
+            return
+
+        new_rules = {}
+        for item in self.rules_tree.get_children():
+            key, rad, bw, off, col = self.rules_tree.item(item, "values")
+            new_rules[str(key)] = {
+                "radius_m": float(rad),
+                "beamwidth": float(bw),
+                "offset_m": float(off),
+                "color_kml": str(col).strip(),
+            }
+
+        msan_color = self.msan_color_var.get().strip()
+        new_rules["MSAN"] = {
+            "radius_m": msan_radius,
+            "beamwidth": 360.0,
+            "offset_m": float(new_rules.get("MSAN", {}).get("offset_m", 5.0)),
+            "color_kml": msan_color,
+        }
+
+        new_mapping = {}
+        for item in self.map_tree.get_children():
+            tech, band, low, high = self.map_tree.item(item, "values")
+            new_mapping.setdefault(str(tech), {}).setdefault(str(band), []).append([float(low), float(high)])
+
+        self.mapper.config.setdefault("settings", {}).update({
+            "output_format": self.fmt_var.get(),
+            "global_opacity_percent": opacity,
+            "default_radius_m": radius,
+            "default_beamwidth": beamwidth,
+            "default_offset_m": offset,
+        })
+        self.mapper.config["band_rules"] = new_rules
+        self.mapper.config["band_mapping"] = new_mapping
+        self.mapper.save_config()
+
+        # Rafraîchir l'arbre des règles pour refléter MSAN et appliquer immédiatement à l'auditeur
+        self._load_config_into_ui()
+        self.mapper.auditor = RANDataAuditor(self.mapper.config.get("band_mapping", {}))
+        self.log("Configuration enregistrée et appliquée en temps réel.")
+        messagebox.showinfo("Configuration enregistrée", "La configuration a été enregistrée et appliquée en temps réel.")
+
 
     def log(self, message):
         self.txt_log.config(state="normal")

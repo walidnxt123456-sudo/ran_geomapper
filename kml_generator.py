@@ -21,10 +21,19 @@ TECH_COLORS_FALLBACK = {
     "3G": {"fill": "8000d7ff", "line": "ff00aaff"},
     "4G": {"fill": "80ff8000", "line": "ffff3300"},
     "5G": {"fill": "8000bf00", "line": "ff008000"},
+    "MSAN": {"fill": "800080ff", "line": "ffff8000"},
     "DEFAULT": {"fill": "80808080", "line": "ff404040"}
 }
+NON_RADIO_DEFAULTS = {
+    "MSAN": {
+        "radius_m": 50,
+        "beamwidth": 360,
+        "offset_m": 5,
+        "color_kml": "ffff8000",
+    }
+}
 
-TECH_ORDER = ["2G", "3G", "4G", "5G", "DEFAULT"]
+TECH_ORDER = ["2G", "3G", "4G", "5G", "MSAN", "DEFAULT"]
 SITE_ICON = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png"
 
 
@@ -66,6 +75,8 @@ class KMLGenerator:
         # 2. Generic tech rule (e.g., "4G")
         if tech in self.band_rules:
             return tech, self.band_rules[tech]
+        if tech in NON_RADIO_DEFAULTS:
+            return tech, NON_RADIO_DEFAULTS[tech]
 
         # 3. Global defaults
         fallback_color = TECH_COLORS_FALLBACK.get(tech, TECH_COLORS_FALLBACK["DEFAULT"])["fill"]
