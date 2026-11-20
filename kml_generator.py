@@ -7,6 +7,7 @@ from xml.sax.saxutils import escape
 
 _INVALID_XML_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 _HEX8 = re.compile(r"^[0-9a-fA-F]{8}$")
+_MISSING_STRINGS = {"", "nan", "none", "null"}
 
 def xml_text(value):
     """Escapes &, <, > and strips characters that are illegal in XML 1.0."""
@@ -53,6 +54,7 @@ class KMLGenerator:
         self.default_radius = self.settings.get("default_radius_m", 250)
         self.default_beamwidth = self.settings.get("default_beamwidth", 60)
         self.default_offset = self.settings.get("default_offset_m", 8)
+        self.label_display = self.settings.get("label_display") or {}
 
         try:
             opacity = float(self.settings.get("global_opacity_percent", 50))
@@ -61,7 +63,79 @@ class KMLGenerator:
         opacity = max(0.0, min(100.0, opacity))
         self.fill_alpha = f"{round(255 * opacity / 100):02x}"
 
+    def _resolve_label_coordinates(self, cell, radius, azimuth):
+        mode = str(self.label_display.get("mode", "near_site")).strip()
+        site_margin = float(self.label_display.get("site_margin_m", 15.0))
+        site_bearing = float(self.label_display.get("site_offset_bearing", 90.0))
+        tip_step = float(self.label_display.get("tip_step_m", 0.0))
+        tip_angle_offset = float(self.label_display.get("tip_angle_offset_deg", 0.0))
+
+        lat = cell["latitude"]
+        lon = cell["longitude"]
+
+        has_valid_az = (
+            azimuth is not None
+            and not self._is_missing_label_val(azimuth)
+            and math.isfinite(float(azimuth))
+        )
+
+        if mode == "cell_tip" and has_valid_az:
+            # L'extrémité de la cellule tient compte de l'éventuel décalage d'origine (offset_m)
+            # et de la marche radiale (tip_step_m) le long de (azimuth + tip_angle_offset_deg)
+            dist_m = max(0.0, float(radius) + tip_step)
+            bearing_deg = (float(azimuth) + tip_angle_offset) % 360.0
+            return self.destination_point(lat, lon, dist_m, bearing_deg)
+
+        dist_m = max(0.0, site_margin)
+        bearing_deg = site_bearing % 360.0
+        return self.destination_point(lat, lon, dist_m, bearing_deg)
+
+    def _build_label_placemark(self, cell, radius, azimuth, indent="        "):
+        if not bool(self.label_display.get("enabled", False)):
+            return ""
+
+        col_name = str(self.label_display.get("column", "") or "").strip()
+        if not col_name:
+            return ""
+
+        attrs = cell.get("attributes") or {}
+        raw_val = attrs.get(col_name)
+        if raw_val is None and isinstance(cell.get("raw_row"), dict):
+            raw_val = cell["raw_row"].get(col_name)
+        if raw_val is None:
+            raw_val = cell.get(col_name)
+
+        label_text = self._format_label_value(
+            raw_val,
+            col_name=col_name,
+            include_col_name=bool(self.label_display.get("include_column_name", False)),
+        )
+        if not label_text:
+            return ""
+
+        try:
+            label_scale = float(self.label_display.get("label_scale", 0.75))
+            if not math.isfinite(label_scale) or label_scale <= 0:
+                label_scale = 0.75
+        except (TypeError, ValueError):
+            label_scale = 0.75
+
+        raw_color = str(self.label_display.get("label_color_kml", "ffffffff") or "").strip()
+        label_color = raw_color if _HEX8.match(raw_color) else "ffffffff"
+
+        lbl_lat, lbl_lon = self._resolve_label_coordinates(cell, radius, azimuth)
+        return (
+            f"{indent}<Placemark>\n"
+            f"{indent}  <name>{xml_text(label_text)}</name>\n"
+            f"{indent}  <Style>"
+            f"<IconStyle><scale>0.35</scale></IconStyle>"
+            f"<LabelStyle><color>{label_color}</color><scale>{label_scale:g}</scale></LabelStyle>"
+            f"</Style>\n"
+            f"{indent}  <Point><coordinates>{lbl_lon:.6f},{lbl_lat:.6f},0</coordinates></Point>\n"
+            f"{indent}</Placemark>"
+        )
     # ------------------------------------------------------------------ rules
+        
     def _get_rule_for_cell(self, cell):
         """Looks up the specific band rule, falling back to tech defaults or global defaults."""
         tech = cell["tech"]
@@ -99,6 +173,46 @@ class KMLGenerator:
         return f"{self.fill_alpha}{bgr}", f"ff{bgr}"
 
     # --------------------------------------------------------------- geometry
+    @staticmethod
+    def _is_missing_label_val(val):
+        if val is None:
+            return True
+        if isinstance(val, float):
+            if math.isnan(val) or not math.isfinite(val):
+                return True
+        text = str(val).strip()
+        return not text or text.lower() in _MISSING_STRINGS
+    
+    @classmethod
+    def _format_label_value(cls, raw_val, col_name, include_col_name):
+        if cls._is_missing_label_val(raw_val):
+            return None
+
+        if isinstance(raw_val, bool):
+            text = "True" if raw_val else "False"
+        elif isinstance(raw_val, int):
+            text = str(raw_val)
+        elif isinstance(raw_val, float):
+            text = str(int(raw_val)) if raw_val.is_integer() else f"{raw_val:g}"
+        else:
+            s = str(raw_val).strip()
+            try:
+                num = float(s.replace(",", "."))
+                if math.isfinite(num) and num.is_integer() and "." in s.replace(",", "."):
+                    text = str(int(num))
+                else:
+                    text = s
+            except ValueError:
+                text = s
+
+        text = " ".join(text.splitlines()).strip()
+        if not text:
+            return None
+
+        if include_col_name and col_name:
+            return f"{col_name}: {text}"
+        return text
+
     @staticmethod
     def destination_point(lat, lon, distance_m, bearing_deg):
         r_earth = 6371000.0
@@ -249,6 +363,7 @@ class KMLGenerator:
 
             for idx, (band, items) in enumerate(sorted(bands.items(), key=band_sort_key), start=2):
                 kml.append(f'    <Folder>\n      <name>{idx:02d} - {tech} {xml_text(band)} ({len(items)} cellules)</name>')
+                band_labels = []
                 for cell, rule_key, rule in items:
                     radius = rule.get("radius_m", self.default_radius)
                     beamwidth = rule.get("beamwidth", self.default_beamwidth)
@@ -272,7 +387,22 @@ class KMLGenerator:
           </outerBoundaryIs>
         </Polygon>
       </Placemark>''')
+                    label_pm = self._build_label_placemark(cell, radius, cell.get("azimuth"), indent="      ")
+                    if label_pm:
+                        if bool(self.label_display.get("group_by_tech_band", True)):
+                            band_labels.append(
+                                self._build_label_placemark(cell, radius, cell.get("azimuth"), indent="        ")
+                            )
+                        else:
+                            kml.append(label_pm)
+                
                 kml.append('    </Folder>')
+
+                if band_labels:
+                    kml.append(f'      <Folder>\n        <name>Labels - {tech} {xml_text(band)} ({len(band_labels)})</name>')
+                    kml.extend(band_labels)
+                    kml.append('      </Folder>')
+
             kml.append('  </Folder>')
 
         kml.append('</Document>')

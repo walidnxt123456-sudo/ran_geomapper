@@ -108,6 +108,7 @@ class RANGeoMapperGUI(tk.Tk):
 
         self.selected_files = []
         self.mapper = RANGeoMapper()
+        self.available_columns = []
         self._build_ui()
         self._load_config_into_ui()
 
@@ -162,6 +163,143 @@ class RANGeoMapperGUI(tk.Tk):
 
         self.txt_log = tk.Text(self, height=13, width=98, font=("Consolas", 8), state="disabled")
         self.txt_log.pack(fill="both", expand=True, padx=20, pady=(4, 10))
+
+        # Tab 4: label display configuration
+        tab_labels = tk.Frame(self, padx=10, pady=8)
+        self.notebook.add(tab_labels, text="  4 · Affichage / Labels  ")
+        self._build_labels_tab(tab_labels)
+
+
+    def _pick_label_color(self):
+        from tkinter import colorchooser
+        chosen = colorchooser.askcolor(title="Choisir la couleur du label", parent=self)
+        if not chosen or not chosen[1]:
+            return
+        hex_rgb = chosen[1].lstrip("#")
+        r, g, b = hex_rgb[0:2], hex_rgb[2:4], hex_rgb[4:6]
+        current = self.lbl_color_var.get().strip()
+        alpha = current[:2] if len(current) == 8 else "ff"
+        self.lbl_color_var.set(f"{alpha}{b}{g}{r}".lower())
+    
+    def _build_labels_tab(self, parent):
+        self.lbl_enabled_var = tk.BooleanVar(value=False)
+        self.lbl_column_var = tk.StringVar(value="")
+        self.lbl_include_colname_var = tk.BooleanVar(value=False)
+        self.lbl_mode_var = tk.StringVar(value="near_site")
+        self.lbl_site_margin_var = tk.StringVar(value="15.0")
+        self.lbl_site_bearing_var = tk.StringVar(value="90.0")
+        self.lbl_tip_step_var = tk.StringVar(value="0.0")
+        self.lbl_tip_angle_var = tk.StringVar(value="0.0")
+        self.lbl_scale_var = tk.StringVar(value="0.75")
+        self.lbl_color_var = tk.StringVar(value="ffffffff")
+        self.lbl_group_var = tk.BooleanVar(value=True)
+
+        src_box = tk.LabelFrame(parent, text=" Colonne et format d'affichage ", padx=10, pady=8)
+        src_box.pack(fill="x", pady=(0, 8))
+        tk.Label(src_box, text="Taille texte :").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
+        self.lbl_scale_entry = tk.Entry(src_box, textvariable=self.lbl_scale_var, width=8)
+        self.lbl_scale_entry.grid(row=2, column=1, sticky="w", padx=(0, 12), pady=(6, 0))
+
+        tk.Label(src_box, text="Couleur KML (aabbggrr) :").grid(row=2, column=2, sticky="w", padx=(0, 6), pady=(6, 0))
+        self.lbl_color_entry = tk.Entry(src_box, textvariable=self.lbl_color_var, width=11)
+        self.lbl_color_entry.grid(row=2, column=3, sticky="w", padx=(0, 6), pady=(6, 0))
+        self.lbl_color_btn = tk.Button(src_box, text="🎨 Couleur", command=self._pick_label_color)
+        self.lbl_color_btn.grid(row=2, column=4, sticky="w", pady=(6, 0))
+
+        self.lbl_group_chk = tk.Checkbutton(
+            src_box,
+            text="Regrouper par techno / bande (sous-dossier dédiée)",
+            variable=self.lbl_group_var,
+        )
+        self.lbl_group_chk.grid(row=3, column=0, columnspan=4, sticky="w", pady=(6, 0))
+
+        tk.Checkbutton(
+            src_box,
+            text="Activer l'affichage d'une colonne sur la carte KML/KMZ",
+            variable=self.lbl_enabled_var,
+            command=self._toggle_label_fields,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+
+        tk.Label(src_box, text="Colonne source :").grid(row=1, column=0, sticky="w", padx=(0, 6))
+        self.lbl_column_combo = ttk.Combobox(src_box, textvariable=self.lbl_column_var, values=[], width=30)
+        self.lbl_column_combo.grid(row=1, column=1, sticky="w", padx=(0, 12))
+
+        tk.Checkbutton(
+            src_box,
+            text="Inclure le nom de colonne (ex: PCI: 128)",
+            variable=self.lbl_include_colname_var,
+        ).grid(row=1, column=2, columnspan=2, sticky="w")
+
+        near_box = tk.LabelFrame(parent, text=" Mode 1 · À côté du site + marge ", padx=10, pady=8)
+        near_box.pack(fill="x", pady=(0, 8))
+
+        tk.Radiobutton(
+            near_box,
+            text="Placer le libellé à côté du site",
+            value="near_site",
+            variable=self.lbl_mode_var,
+            command=self._toggle_label_fields,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        tk.Label(near_box, text="Marge (m) :").grid(row=1, column=0, sticky="w")
+        self.lbl_site_margin_entry = tk.Entry(near_box, textvariable=self.lbl_site_margin_var, width=10)
+        self.lbl_site_margin_entry.grid(row=1, column=1, sticky="w", padx=(4, 16))
+
+        tk.Label(near_box, text="Azimut / cap décalage (°) :").grid(row=1, column=2, sticky="w")
+        self.lbl_site_bearing_entry = tk.Entry(near_box, textvariable=self.lbl_site_bearing_var, width=10)
+        self.lbl_site_bearing_entry.grid(row=1, column=3, sticky="w", padx=(4, 0))
+
+        tip_box = tk.LabelFrame(parent, text=" Mode 2 · À l'extrémité de la cellule + azimut / marche ", padx=10, pady=8)
+        tip_box.pack(fill="x")
+
+        tk.Radiobutton(
+            tip_box,
+            text="Placer le libellé au bout de la cellule selon son azimut",
+            value="cell_tip",
+            variable=self.lbl_mode_var,
+            command=self._toggle_label_fields,
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+
+        tk.Label(tip_box, text="Marche rayon (m) :").grid(row=1, column=0, sticky="w")
+        self.lbl_tip_step_entry = tk.Entry(tip_box, textvariable=self.lbl_tip_step_var, width=9)
+        self.lbl_tip_step_entry.grid(row=1, column=1, sticky="w", padx=(4, 12))
+
+        tk.Label(tip_box, text="Marge angle (°) :").grid(row=1, column=2, sticky="w")
+        self.lbl_tip_angle_entry = tk.Entry(tip_box, textvariable=self.lbl_tip_angle_var, width=9)
+        self.lbl_tip_angle_entry.grid(row=1, column=3, sticky="w", padx=(4, 0))
+
+        tk.Label(
+            tip_box,
+            text="Rayon : 0 = bout, +m = au-delà, -m = intérieur | Angle : décalage par rapport à l'azimut",
+            fg="gray",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        self._toggle_label_fields()
+
+    def _toggle_label_fields(self):
+        enabled = bool(self.lbl_enabled_var.get())
+        mode = self.lbl_mode_var.get()
+        near_state = "normal" if (enabled and mode == "near_site") else "disabled"
+        tip_state = "normal" if (enabled and mode == "cell_tip") else "disabled"
+        entry_state = "normal" if enabled else "disabled"
+
+        self.lbl_column_combo.configure(state=entry_state)
+        self.lbl_scale_entry.configure(state=entry_state)
+        self.lbl_color_entry.configure(state=entry_state)
+        self.lbl_color_btn.configure(state=entry_state)
+        self.lbl_site_margin_entry.configure(state=near_state)
+        self.lbl_site_bearing_entry.configure(state=near_state)
+        self.lbl_tip_step_entry.configure(state=tip_state)
+        self.lbl_tip_angle_entry.configure(state=tip_state)
+        self.lbl_group_chk.configure(state=entry_state)
+
+    def update_label_columns(self, columns):
+        merged = list(dict.fromkeys(list(self.available_columns) + [str(c).strip() for c in columns if str(c).strip()]))
+        self.available_columns = merged
+        current = self.lbl_column_var.get().strip()
+        values = list(dict.fromkeys(([current] if current else []) + merged))
+        self.lbl_column_combo["values"] = values
+
 
     def _pick_rule_color(self):
         from tkinter import colorchooser
@@ -308,8 +446,6 @@ class RANGeoMapperGUI(tk.Tk):
         self.cfg_beamwidth.set(str(settings.get("default_beamwidth", 60)))
         self.cfg_offset.set(str(settings.get("default_offset_m", 8)))
 
-        msan_rule = self.mapper.config.get("band_rules", {}).get("MSAN", {})
-
         for item in self.rules_tree.get_children():
             self.rules_tree.delete(item)
         for key, rule in sorted(self.mapper.config.get("band_rules", {}).items()):
@@ -328,6 +464,24 @@ class RANGeoMapperGUI(tk.Tk):
                 for r in ranges:
                     if isinstance(r, (list, tuple)) and len(r) == 2:
                         self.map_tree.insert("", "end", values=(tech, band, r[0], r[1]))
+
+        lbl_cfg = settings.get("label_display", {})
+        self.lbl_enabled_var.set(bool(lbl_cfg.get("enabled", False)))
+        col_val = str(lbl_cfg.get("column", "") or "")
+        self.lbl_column_var.set(col_val)
+        if col_val:
+            self.update_label_columns([col_val])
+        self.lbl_include_colname_var.set(bool(lbl_cfg.get("include_column_name", False)))
+        self.lbl_scale_var.set(str(lbl_cfg.get("label_scale", 0.75)))
+        self.lbl_color_var.set(str(lbl_cfg.get("label_color_kml", "ffffffff")))
+        self.lbl_group_var.set(bool(lbl_cfg.get("group_by_tech_band", True)))
+        self.lbl_mode_var.set(str(lbl_cfg.get("mode", "near_site")))
+        self.lbl_site_margin_var.set(str(lbl_cfg.get("site_margin_m", 15.0)))
+        self.lbl_site_bearing_var.set(str(lbl_cfg.get("site_offset_bearing", 90.0)))
+        self.lbl_tip_step_var.set(str(lbl_cfg.get("tip_step_m", 0.0)))
+        self.lbl_tip_angle_var.set(str(lbl_cfg.get("tip_angle_offset_deg", 0.0)))
+        self._toggle_label_fields()
+
 
     def _on_rule_select(self, _event):
         sel = self.rules_tree.selection()
@@ -412,7 +566,34 @@ class RANGeoMapperGUI(tk.Tk):
                 "offset_m": float(off),
                 "color_kml": str(col).strip(),
             }
-
+        
+        try:
+            site_margin = float(self.lbl_site_margin_var.get())
+            site_bearing = float(self.lbl_site_bearing_var.get())
+            tip_step = float(self.lbl_tip_step_var.get())
+            tip_angle = float(self.lbl_tip_angle_var.get())
+            label_scale = float(self.lbl_scale_var.get())
+        except ValueError:
+            messagebox.showerror(
+                "Paramètres invalides",
+                "Vérifiez que les paramètres de labels (marge, azimut, marche, angle, taille) sont numériques.",
+            )
+            return
+        label_color = self.lbl_color_var.get().strip().lower() or "ffffffff"
+        label_display_cfg = {
+            "enabled": bool(self.lbl_enabled_var.get()),
+            "column": str(self.lbl_column_var.get()).strip(),
+            "mode": str(self.lbl_mode_var.get()),
+            "site_margin_m": site_margin,
+            "site_offset_bearing": site_bearing % 360.0,
+            "tip_step_m": tip_step,
+            "tip_angle_offset_deg": tip_angle,
+            "include_column_name": bool(self.lbl_include_colname_var.get()),
+            "label_scale": max(0.1, label_scale),
+            "label_color_kml": label_color,
+            "group_by_tech_band": bool(self.lbl_group_var.get()),
+        }
+        
         new_mapping = {}
         for item in self.map_tree.get_children():
             tech, band, low, high = self.map_tree.item(item, "values")
@@ -424,6 +605,7 @@ class RANGeoMapperGUI(tk.Tk):
             "default_radius_m": radius,
             "default_beamwidth": beamwidth,
             "default_offset_m": offset,
+            "label_display": label_display_cfg
         })
         self.mapper.config["band_rules"] = new_rules
         self.mapper.config["band_mapping"] = new_mapping
@@ -484,6 +666,7 @@ class RANGeoMapperGUI(tk.Tk):
                 if df is None or df.empty:
                     self.log("Fichier vide ou illisible.")
                     continue
+                self.update_label_columns(df.columns)
 
                 mapping, known = self.mapper.suggest_mapping(df, name)
                 tech = known["tech"] if known else (self.mapper.auditor.detect_file_tech(df, name, mapping or {}) or "")
